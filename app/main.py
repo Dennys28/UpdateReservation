@@ -1,64 +1,86 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
-from database import SessionLocal, init_db
+from flask import Flask, request, jsonify
+from database import db, init_db
 from models import Reservation
-from schemas import ReservationCreate, ReservationResponse
 
-# Inicializar la base de datos
-init_db()
+app = Flask(__name__)
 
-# Crear instancia de FastAPI
-app = FastAPI(title="Reservation Service", description="Microservicio para la gestión de reservas", version="1.0")
+# Inicializar base de datos con configuración desde .env
+init_db(app)
 
-
-# Dependencia para obtener la sesión de la base de datos
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@app.get("/")
+@app.route("/", methods=["GET"])
 def root():
-    return {"message": "Reservation Service is running"}
+    return jsonify({"message": "Reservation Service is running"})
 
 
-@app.post("/create_reservation/", response_model=ReservationResponse)
-def create_reservation(reservation: ReservationCreate, db: Session = Depends(get_db)):
-    new_reservation = Reservation(**reservation.dict(), status="Confirmed")
-    db.add(new_reservation)
-    db.commit()
-    db.refresh(new_reservation)
-    return new_reservation
+@app.route("/create_reservation/", methods=["POST"])
+def create_reservation():
+    data = request.json
+    if not data:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    try:
+        new_reservation = Reservation(
+            user_id=data["user_id"],
+            date=data["date"],
+            time=data["time"],
+            status="Confirmed"
+        )
+        db.session.add(new_reservation)
+        db.session.commit()
+        return jsonify({"id": new_reservation.id, "status": new_reservation.status}), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
 
 
-@app.put("/update_reservation/{reservation_id}")
-def update_reservation(reservation_id: int, status: str, db: Session = Depends(get_db)):
-    reservation = db.query(Reservation).filter(Reservation.id == reservation_id).first()
+@app.route("/update_reservation/<int:reservation_id>", methods=["PUT"])
+def update_reservation(reservation_id):
+    data = request.json
+    if not data or "status" not in data:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    reservation = Reservation.query.get(reservation_id)
     if not reservation:
-        raise HTTPException(status_code=404, detail="Reservation not found")
+        return jsonify({"error": "Reservation not found"}), 404
 
-    reservation.status = status
-    db.commit()
-    return {"message": f"Reservation {reservation_id} updated to {status}"}
+    try:
+        reservation.status = data["status"]
+        db.session.commit()
+        return jsonify({"message": f"Reservation {reservation_id} updated to {data['status']}"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
 
 
-@app.get("/reservation/{reservation_id}", response_model=ReservationResponse)
-def get_reservation(reservation_id: int, db: Session = Depends(get_db)):
-    reservation = db.query(Reservation).filter(Reservation.id == reservation_id).first()
+@app.route("/reservation/<int:reservation_id>", methods=["GET"])
+def get_reservation(reservation_id):
+    reservation = Reservation.query.get(reservation_id)
     if not reservation:
-        raise HTTPException(status_code=404, detail="Reservation not found")
-    return reservation
+        return jsonify({"error": "Reservation not found"}), 404
+
+    return jsonify({
+        "id": reservation.id,
+        "user_id": reservation.user_id,
+        "date": reservation.date,
+        "time": reservation.time,
+        "status": reservation.status
+    })
 
 
-@app.delete("/delete_reservation/{reservation_id}")
-def delete_reservation(reservation_id: int, db: Session = Depends(get_db)):
-    reservation = db.query(Reservation).filter(Reservation.id == reservation_id).first()
+@app.route("/delete_reservation/<int:reservation_id>", methods=["DELETE"])
+def delete_reservation(reservation_id):
+    reservation = Reservation.query.get(reservation_id)
     if not reservation:
-        raise HTTPException(status_code=404, detail="Reservation not found")
+        return jsonify({"error": "Reservation not found"}), 404
 
-    db.delete(reservation)
-    db.commit()
-    return {"message": f"Reservation {reservation_id} deleted"}
+    try:
+        db.session.delete(reservation)
+        db.session.commit()
+        return jsonify({"message": f"Reservation {reservation_id} deleted"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, debug=True)
